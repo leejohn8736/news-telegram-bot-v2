@@ -1,25 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-LLM(Gemini)을 사용해 매일 새로운 내용 생성
+최신 google-genai 패키지 사용
 """
 
 import os
 from datetime import datetime
 import pytz
-import google.generativeai as genai
-
-# ============================================================
-# Gemini API 설정
-# ============================================================
-# GitHub Secrets에 GEMINI_API_KEY 등록 필요
-API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not API_KEY:
-    raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
-
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")  # 또는 gemini-1.5-pro
+from google import genai
 
 
 def get_today_str() -> str:
@@ -62,15 +50,22 @@ def build_prompt(today: str) -> str:
 
 def generate_report_with_llm() -> str:
     """Gemini를 호출하여 리포트 생성"""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY 환경변수가 없습니다.\n"
+            "GitHub 저장소 → Settings → Secrets and variables → Actions에서\n"
+            "Name: GEMINI_API_KEY 로 시크릿을 등록하세요."
+        )
+
+    client = genai.Client(api_key=api_key)
+
     today = get_today_str()
     prompt = build_prompt(today)
 
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.7,
-            "max_output_tokens": 8192,
-        }
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",          # 안정적인 모델 (필요시 gemini-1.5-flash 등으로 변경 가능)
+        contents=prompt,
     )
     return response.text
 
