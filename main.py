@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-- google-genai 최신 패키지 사용
-- 모델 과부하(503) 대응: 여러 모델 + 재시도 + 대기시간
-- 텔레그램 4096자 제한 대응 (자동 분할)
+- Gemini로 리포트 생성
+- 텔레그램으로 자동 전송 (4096자 제한 대응)
 """
 
 import os
 import time
+import requests
 from datetime import datetime
 import pytz
 from google import genai
@@ -16,7 +16,6 @@ from google import genai
 # ============================================================
 # 설정
 # ============================================================
-# 시도할 모델 우선순위 (최신 → 안정)
 CANDIDATE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.7-flash",
@@ -24,15 +23,11 @@ CANDIDATE_MODELS = [
     "gemini-3.5-flash",
 ]
 
-# 각 모델당 최대 재시도 횟수
 MAX_RETRIES_PER_MODEL = 3
-
-# 재시도 사이 대기 시간 (초) - 지수적으로 증가
 BASE_WAIT_SECONDS = 8
 
 
 def get_today_str() -> str:
-    """한국 시간 기준 오늘 날짜 문자열 반환"""
     kst = pytz.timezone("Asia/Seoul")
     now = datetime.now(kst)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
@@ -40,7 +35,6 @@ def get_today_str() -> str:
 
 
 def build_prompt(today: str) -> str:
-    """원본 요청 형식을 그대로 반영한 프롬프트"""
     return f"""
 당신은 한국 증시 전문 애널리스트입니다.
 아래 요구사항을 **정확히** 지켜서 오늘({today}) 기준의 당일 증시 심층 분석 글을 작성하세요.
@@ -70,10 +64,7 @@ def build_prompt(today: str) -> str:
 
 
 def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
-    """
-    텔레그램 메시지 길이 제한(4096자)을 피하기 위해
-    안전하게 분할하는 함수 (기본 4000자 사용)
-    """
+    """텔레그램 4096자 제한을 피하기 위해 안전하게 분할"""
     if len(text) <= max_length:
         return [text]
 
@@ -83,7 +74,6 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
             chunks.append(text)
             break
 
-        # 줄바꿈 위치를 우선으로 자르기
         split_pos = text.rfind("\n", 0, max_length)
         if split_pos == -1 or split_pos < max_length // 2:
             split_pos = max_length
@@ -94,18 +84,39 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
     return chunks
 
 
+def send_to_telegram(text: str) -> None:
+    """텔레그램으로 메시지 전송"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id:
+        print("텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID가 없습니다.")
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
+    chunks = split_for_telegram(text, max_length=4000)
+
+    for i, chunk in enumerate(chunks, 1):
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "HTML",   # 필요시 Markdown으로 변경 가능
+        }
+
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            response.raise_for_status()
+            print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
+            time.sleep(1)  # 너무 빠르게 연속 전송하지 않도록
+        except Exception as e:
+            print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): {e}")
+
+
 def generate_report_with_llm() -> str:
-    """
-    여러 모델을 순차적으로 시도하고,
-    각 모델마다 재시도를 수행하여 503(과부하) 에러에 대응
-    """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY 환경변수가 없습니다.\n"
-            "GitHub → Settings → Secrets and variables → Actions에서\n"
-            "Name: GEMINI_API_KEY 로 등록하세요."
-        )
+        raise ValueError("GEMINI_API_KEY 환경변수가 없습니다.")
 
     client = genai.Client(api_key=api_key)
     today = get_today_str()
@@ -119,12 +130,10 @@ def generate_report_with_llm() -> str:
         for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
             try:
                 print(f"  → 시도 {attempt}/{MAX_RETRIES_PER_MODEL}")
-
                 response = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
                 )
-
                 print(f"성공! 사용 모델: {model_name}")
                 return response.text
 
@@ -132,37 +141,28 @@ def generate_report_with_llm() -> str:
                 last_error = e
                 error_str = str(e)
 
-                # 503 UNAVAILABLE (과부하)인 경우 대기 후 재시도
                 if "503" in error_str or "UNAVAILABLE" in error_str or "high demand" in error_str.lower():
-                    wait_time = BASE_WAIT_SECONDS * attempt   # 8초 → 16초 → 24초
+                    wait_time = BASE_WAIT_SECONDS * attempt
                     print(f"  과부하(503) 발생. {wait_time}초 대기 후 재시도...")
                     time.sleep(wait_time)
                 else:
-                    # 다른 에러(404, 권한 등)는 바로 다음 모델로
                     print(f"  실패: {e}")
                     break
 
         print(f"모델 {model_name} 최종 실패. 다음 모델로 이동합니다.")
 
-    # 모든 모델 + 재시도가 실패한 경우
-    raise RuntimeError(
-        f"모든 모델 시도 실패.\n"
-        f"마지막 에러: {last_error}\n\n"
-        f"※ 현재 Google Gemini 서버가 과부하 상태일 가능성이 높습니다.\n"
-        f"   10~30분 뒤에 Actions에서 다시 수동 실행해보세요."
-    )
+    raise RuntimeError(f"모든 모델 시도 실패. 마지막 에러: {last_error}")
 
 
 def main():
     print("리포트 생성 중... (Gemini API 호출)")
     report = generate_report_with_llm()
 
-    # 전체 리포트 출력
     print("\n" + "=" * 60)
     print(report)
     print("=" * 60)
 
-    # 파일 저장 (전체)
+    # 파일 저장
     kst = pytz.timezone("Asia/Seoul")
     today_file = datetime.now(kst).strftime("%Y%m%d")
     full_filename = f"report_{today_file}.txt"
@@ -171,17 +171,10 @@ def main():
         f.write(report)
     print(f"\n전체 리포트 저장 완료: {full_filename}")
 
-    # 텔레그램용 분할
-    chunks = split_for_telegram(report, max_length=4000)
-    print(f"텔레그램용 메시지 분할 개수: {len(chunks)}개")
-
-    for i, chunk in enumerate(chunks, 1):
-        chunk_filename = f"report_{today_file}_part{i}.txt"
-        with open(chunk_filename, "w", encoding="utf-8") as f:
-            f.write(chunk)
-        print(f"  → {chunk_filename} 저장 (길이: {len(chunk)}자)")
-
-    print("\n모든 작업 완료.")
+    # 텔레그램 전송
+    print("\n텔레그램으로 전송 시작...")
+    send_to_telegram(report)
+    print("텔레그램 전송 작업 완료.")
 
 
 if __name__ == "__main__":
