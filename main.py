@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-최신 google-genai 패키지 사용
+최신 google-genai 패키지 + gemini-3.8-flash 사용
 """
 
 import os
@@ -64,7 +64,7 @@ def generate_report_with_llm() -> str:
     prompt = build_prompt(today)
 
     response = client.models.generate_content(
-        model="gemini-2.0-flash",          # 안정적인 모델 (필요시 gemini-1.5-flash 등으로 변경 가능)
+        model="gemini-3.8-flash",   # ← 최신 사용 가능한 모델로 변경
         contents=prompt,
     )
     return response.text
