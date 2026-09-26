@@ -1,182 +1,97 @@
+# -*- coding: utf-8 -*-
+"""
+매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
+LLM(Gemini)을 사용해 매일 새로운 내용 생성
+"""
+
 import os
-import sys
-import json
-import time
-import html
-import urllib.request
-import urllib.parse
-from datetime import datetime, timezone, timedelta
-from email.utils import parsedate_to_datetime
+from datetime import datetime
+import pytz
+import google.generativeai as genai
 
-# 1. Secrets에서 텔레그램 정보 가져오기
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# ============================================================
+# Gemini API 설정
+# ============================================================
+# GitHub Secrets에 GEMINI_API_KEY 등록 필요
+API_KEY = os.getenv("GEMINI_API_KEY")
 
-# 2. 감시할 전체 키워드 목록
-KEYWORDS = [
-    "삼성전자",
-    "AI",
-    "반도체",
-    "증권",
-    "부동산",
-    "금리",
-    "주식",
-    "현대차",
-    "SK하이닉스",
-    "배터리"
-]
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
 
-SENT_LINKS_FILE = "sent_links.txt"
+genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")  # 또는 gemini-1.5-pro
 
-def load_sent_links():
-    """이미 발송된 기사 링크 목록 불러오기"""
-    if os.path.exists(SENT_LINKS_FILE):
-        with open(SENT_LINKS_FILE, "r", encoding="utf-8") as f:
-            return set(line.strip() for line in f if line.strip())
-    return set()
 
-def save_sent_links(sent_links):
-    """발송된 기사 링크 목록 저장하기"""
-    with open(SENT_LINKS_FILE, "w", encoding="utf-8") as f:
-        for link in sent_links:
-            f.write(f"{link}\n")
+def get_today_str() -> str:
+    """한국 시간 기준 오늘 날짜 문자열"""
+    kst = pytz.timezone("Asia/Seoul")
+    now = datetime.now(kst)
+    weekdays = ["월", "화", "수", "목", "금", "토", "일"]
+    return f"{now.year}년 {now.month}월 {now.day}일 ({weekdays[now.weekday()]})"
 
-def send_telegram_msg(text):
-    """텔레그램 메시지 전송 함수"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 설정값이 없습니다.")
-        return False
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
-    
-    data = json.dumps(payload).encode('utf-8')
-    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-    
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return True
-    except Exception as e:
-        print(f"❌ 텔레그램 발송 오류: {e}")
-        return False
 
-def fetch_rss_news(keyword):
-    """발행된 지 15분 이내(900초)의 뉴스만 골라내는 크롤러"""
-    encoded_keyword = urllib.parse.quote(keyword)
-    rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
-    
-    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
-    articles = []
-    
-    # 현재 한국 시간(KST) 구하기
-    kst = timezone(timedelta(hours=9))
-    now_kst = datetime.now(kst)
-    
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            xml_data = response.read().decode('utf-8')
-            items = xml_data.split('<item>')
-            
-            for item in items[1:]:
-                pub_date_str = ""
-                if '<pubDate>' in item and '</pubDate>' in item:
-                    pub_date_str = item.split('<pubDate>')[1].split('</pubDate>')[0].strip()
-                
-                is_within_15_min = False
-                pub_formatted = ""
-                
-                if pub_date_str:
-                    try:
-                        # 기사 발행 시간을 KST로 변환
-                        dt = parsedate_to_datetime(pub_date_str).astimezone(kst)
-                        pub_formatted = dt.strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        # (현재 시간 - 기사 발행 시간) 계산 (초 단위)
-                        time_diff_seconds = (now_kst - dt).total_seconds()
-                        
-                        # 발행된 지 0초 이상 900초(15분) 이내인 기사만 필터링
-                        if 0 <= time_diff_seconds <= 900:
-                            is_within_15_min = True
-                    except Exception:
-                        pass
-                
-                # 15분이 넘었거나 시간 계산이 안 된 기사는 제외
-                if not is_within_15_min:
-                    continue
+def build_prompt(today: str) -> str:
+    """원본 요청 형식을 그대로 반영한 프롬프트"""
+    return f"""
+당신은 한국 증시 전문 애널리스트입니다.
+아래 요구사항을 **정확히** 지켜서 오늘({today}) 기준의 당일 증시 심층 분석 글을 작성하세요.
 
-                title = ""
-                if '<title>' in item and '</title>' in item:
-                    title = item.split('<title>')[1].split('</title>')[0]
-                    title = title.replace('<![CDATA[', '').replace(']]>', '').strip()
-                
-                link = ""
-                if '<link>' in item and '</link>' in item:
-                    link = item.split('<link>')[1].split('</link>')[0].strip()
-                
-                source = "언론사 미상"
-                if '<source' in item and '</source>' in item:
-                    source = item.split('>')[1].split('</source>')[0].strip()
+반드시 지켜야 할 형식:
 
-                if keyword in title and link:
-                    articles.append({
-                        'keyword': keyword,
-                        'title': title,
-                        'link': link,
-                        'source': source,
-                        'pub_time': pub_formatted
-                    })
-    except Exception as e:
-        print(f"❌ [{keyword}] 뉴스 수집 실패: {e}")
-        
-    return articles
+1. 글 시작 전 한국 시간 기준 당일 오늘 날짜를 넣어라.
+2. 당일 증시 심층 분석.
+3. 한국 오늘 새벽과 아침 미국 증시와 국내 경제·산업과 증권, 정치와 외교, 대통령 관련 뉴스 심층 정리.
+4. 매크로 지표, FOMC 관련, 반도체 사이클, 유가 영향까지 포함.
+5. 가장 중요한 테마와 대장주 가능성 종목군도 말해.
+6. 정치 외교 산업 관련종목 코스피 코스닥 각각 10개 뜨거운 관심 받는 걸로 순환매매 가능종목 번호 넣어서 말해.
+   - 코스피 종목 1부터 10 번호 순서 넣고 하트 ♡ 모양 넣어. 각 종목명 옆에 테마와 섹터 적어.
+   - 코스닥 종목도 1부터 10 번호 넣고 ♡ 모양 넣어. 각 종목명 옆에 테마와 섹터 적어.
+7. 방금 나온 앞 내용으로 당일 오전 매매 가능한 종목 영업이익과 유보율 좋은 종목으로 수혜를 받을 수 있는 종목으로 당일 섹터와 테마 뉴스 있는 것으로
+   - 코스피로 20개 1등주와 2등주 추천 (추천시 1등주 종목명 테마와 섹터 / 2등주 종목명 테마와 섹터 넣어줘)
+   - 그 다음은 코스닥으로 20개 1등주와 2등주 추천 (같은 형식)
+8. 마지막에는 중요 표시로 종목 권유와 투자에 관한 책임은 투자자에게 있다는 경고 문구 꼭 포함.
+9. 끝에 "출처 AI"라고 글 적어.
+
+주의사항:
+- 실제 존재하는 종목만 사용해라.
+- 매일 내용이 달라지도록 최신 테마와 이슈를 반영해라.
+- 형식은 위 요구사항을 한 글자도 빠뜨리지 말고 정확히 지켜라.
+- 한국어로만 작성해라.
+"""
+
+
+def generate_report_with_llm() -> str:
+    """Gemini를 호출하여 리포트 생성"""
+    today = get_today_str()
+    prompt = build_prompt(today)
+
+    response = model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0.7,
+            "max_output_tokens": 8192,
+        }
+    )
+    return response.text
+
 
 def main():
-    print("🚀 실시간 뉴스 고속 감시 로봇 실행 (전체 키워드 일괄 검사)...")
-    sent_links = load_sent_links()
-    total_sent_count = 0
-    
-    # 매 실행마다 10개 키워드 전체를 순차적으로 모두 검사
-    for keyword in KEYWORDS:
-        print(f"🔍 키워드 감시 중: [{keyword}]")
-        articles = fetch_rss_news(keyword)
-        
-        for article in articles:
-            link = article['link']
-            # 중복 발송 방지
-            if link in sent_links:
-                continue
-            
-            safe_keyword = html.escape(article['keyword'])
-            safe_title = html.escape(article['title'])
-            safe_source = html.escape(article['source'])
-            safe_pub_time = html.escape(article['pub_time'])
-            
-            # 요청된 텔레그램 메시지 헤더 포맷 적용
-            message = (
-                f"🚨 <b>[실시간 신규 뉴스 발송 - {safe_keyword}]</b>\n\n"
-                f"<b>제목:</b> {safe_title}\n"
-                f"<b>출처:</b> {safe_source}\n"
-                f"<b>발행 시간:</b> {safe_pub_time}\n\n"
-                f"🔗 <a href='{link}'>기사 읽기</a>"
-            )
-            
-            if send_telegram_msg(message):
-                sent_links.add(link)
-                save_sent_links(sent_links)
-                print(f"✅ [{keyword}] 최신 뉴스 발송 성공: {article['title']}")
-                total_sent_count += 1
-                # 텔레그램 연속 발송 제한 방지를 위한 짧은 대기 (0.5초)
-                time.sleep(0.5)
+    print("리포트 생성 중... (Gemini API 호출)")
+    report = generate_report_with_llm()
 
-    if total_sent_count == 0:
-        print("ℹ️ 이번 스케줄에서는 모든 키워드에 대해 최근 15분 이내 신규 뉴스가 없습니다.")
-    else:
-        print(f"🎉 총 {total_sent_count}건의 신규 뉴스를 성공적으로 발송했습니다.")
+    # 콘솔 출력
+    print(report)
+
+    # 파일 저장
+    kst = pytz.timezone("Asia/Seoul")
+    today_file = datetime.now(kst).strftime("%Y%m%d")
+    filename = f"report_{today_file}.txt"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(report)
+
+    print(f"\n파일 저장 완료: {filename}")
+
 
 if __name__ == "__main__":
     main()
