@@ -1,13 +1,26 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-최신 google-genai 패키지 + gemini-3.8-flash 사용
+- 최신 google-genai + gemini-3.8-flash
+- 텔레그램 4096자 제한 대응 (자동 분할)
 """
 
 import os
 from datetime import datetime
 import pytz
 from google import genai
+from google.genai import types
+
+
+# --------------------------------------------------
+# 사용 가능한 모델 우선순위 (최신 → 안정)
+# --------------------------------------------------
+CANDIDATE_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+]
 
 
 def get_today_str() -> str:
@@ -48,44 +61,93 @@ def build_prompt(today: str) -> str:
 """
 
 
+def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
+    """
+    텔레그램 메시지 길이 제한(4096자)을 피하기 위해
+    안전하게 분할하는 함수 (기본 4000자)
+    """
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= max_length:
+            chunks.append(text)
+            break
+
+        # 최대한 max_length 근처에서 줄바꿈으로 자르기
+        split_pos = text.rfind("\n", 0, max_length)
+        if split_pos == -1 or split_pos < max_length // 2:
+            split_pos = max_length
+
+        chunks.append(text[:split_pos].rstrip())
+        text = text[split_pos:].lstrip()
+
+    return chunks
+
+
 def generate_report_with_llm() -> str:
-    """Gemini를 호출하여 리포트 생성"""
+    """여러 모델을 순차적으로 시도하여 리포트 생성"""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError(
             "GEMINI_API_KEY 환경변수가 없습니다.\n"
-            "GitHub 저장소 → Settings → Secrets and variables → Actions에서\n"
-            "Name: GEMINI_API_KEY 로 시크릿을 등록하세요."
+            "GitHub → Settings → Secrets and variables → Actions에서\n"
+            "Name: GEMINI_API_KEY 로 등록하세요."
         )
 
     client = genai.Client(api_key=api_key)
-
     today = get_today_str()
     prompt = build_prompt(today)
 
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",   # ← 최신 사용 가능한 모델로 변경
-        contents=prompt,
-    )
-    return response.text
+    last_error = None
+
+    for model_name in CANDIDATE_MODELS:
+        try:
+            print(f"모델 시도 중: {model_name}")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            print(f"성공! 사용 모델: {model_name}")
+            return response.text
+        except Exception as e:
+            print(f"실패 ({model_name}): {e}")
+            last_error = e
+            continue
+
+    raise RuntimeError(f"모든 모델 시도 실패. 마지막 에러: {last_error}")
 
 
 def main():
     print("리포트 생성 중... (Gemini API 호출)")
     report = generate_report_with_llm()
 
-    # 콘솔 출력
+    # 전체 리포트 출력
+    print("\n" + "=" * 60)
     print(report)
+    print("=" * 60)
 
-    # 파일 저장
+    # 파일 저장 (전체)
     kst = pytz.timezone("Asia/Seoul")
     today_file = datetime.now(kst).strftime("%Y%m%d")
-    filename = f"report_{today_file}.txt"
+    full_filename = f"report_{today_file}.txt"
 
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(full_filename, "w", encoding="utf-8") as f:
         f.write(report)
+    print(f"\n전체 리포트 저장 완료: {full_filename}")
 
-    print(f"\n파일 저장 완료: {filename}")
+    # 텔레그램용 분할
+    chunks = split_for_telegram(report, max_length=4000)
+    print(f"텔레그램용 메시지 분할 개수: {len(chunks)}개")
+
+    for i, chunk in enumerate(chunks, 1):
+        chunk_filename = f"report_{today_file}_part{i}.txt"
+        with open(chunk_filename, "w", encoding="utf-8") as f:
+            f.write(chunk)
+        print(f"  → {chunk_filename} 저장 (길이: {len(chunk)}자)")
+
+    print("\n모든 작업 완료.")
 
 
 if __name__ == "__main__":
