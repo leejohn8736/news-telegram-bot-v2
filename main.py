@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-- Gemini로 리포트 생성
-- 텔레그램으로 자동 전송 (4096자 제한 대응 및 안정화)
+- Gemini로 리포트 생성 (최신 gemini-3.8-flash 모델 적용)
+- 텔레그램으로 자동 전송 (4096자 제한 대응 및 안전 전송)
 """
 
 from datetime import datetime
@@ -13,12 +13,11 @@ import pytz
 import requests
 
 # ============================================================
-# 설정
+# 설정 (Google API 권장 최신 모델 식별자 반영)
 # ============================================================
-# 유효하고 표준화된 최신 Gemini 모델 우선순위 설정
 CANDIDATE_MODELS = [
-    "gemini-2.5-flash",  # 1순위: 속도 및 성능 최적화 모델
-    "gemini-2.5-pro",  # 2순위: 고성능 백업 모델
+    "gemini-3.8-flash",  # 1순위: Google API 권장 최신 Flash 모델
+    "gemini-3.1-pro-preview",  # 2순위: 백업용 고성능 Pro 모델
 ]
 
 MAX_RETRIES_PER_MODEL = 3
@@ -101,14 +100,13 @@ def send_to_telegram(text: str) -> None:
     payload = {
         "chat_id": chat_id,
         "text": chunk,
-        # HTML 태그 분할 시 생기는 파싱 오류 방지를 위해 parse_mode 생략 (일반 텍스트 전송)
     }
 
     try:
       response = requests.post(url, json=payload, timeout=30)
       response.raise_for_status()
       print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-      time.sleep(1)  # 연속 전송 시 텔레그램 서버 차단 방지
+      time.sleep(1)  # 텔레그램 서버 연속 전송 제한 방지
     except Exception as e:
       print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): {e}")
 
@@ -151,7 +149,6 @@ def generate_report_with_llm() -> str:
           time.sleep(wait_time)
         else:
           print(f"  실패 ({model_name}): {e}")
-          # 과부하가 아닌 일반 실패 시, 루프를 종료하고 바로 다음 후보 모델로 넘어감
           break
 
     print(f"모델 {model_name} 실패. 다음 후보 모델로 이동합니다.")
