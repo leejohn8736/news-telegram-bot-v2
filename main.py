@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-- Gemini API 리포트 생성 (429 Quota 자동 대기 및 모델 폴백)
-- 텔레그램 메신저 자동 전송
+- Gemini API 리포트 생성 (속도 및 쿼터 최적화)
+- 텔레그램 메신저 전송
 """
 
 from datetime import datetime
@@ -14,15 +14,16 @@ import pytz
 import requests
 
 # ============================================================
-# 설정 (검증된 정식 모델명 구성 및 모델별 분리)
+# 설정 (대기시간 최소화 및 안정화 모델 우선배치)
 # ============================================================
 CANDIDATE_MODELS = [
-    "gemini-2.5-flash",  # 1순위: 가장 빠르고 안정적인 플래시 모델
-    "gemini-2.5-pro",    # 2순위: 2.5 프로 모델
-    "gemini-2.0-flash",  # 3순위: 2.0 플래시 백업
+    "gemini-3.6-flash",  # 1순위: 응답 속도 및 안정성 최고
+    "gemini-flash",      # 2순위: 최신 안정화 별칭
+    "gemini-3.8-flash"   # 3순위: 백업
 ]
 
-MAX_RETRIES_PER_MODEL = 2
+MAX_RETRIES_PER_MODEL = 2  # 빠른 넘어가기를 위해 재시도 2회로 제한
+BASE_WAIT_SECONDS = 3      # 대기 시간을 3초로 대폭 축소
 
 
 def get_today_str() -> str:
@@ -83,7 +84,7 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
 
 
 def send_to_telegram(text: str) -> None:
-  """텔레그램 메시지 전송"""
+  """텔레그램 메시지 전송 및 예외 상세 로그 출력"""
   bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
   chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -103,10 +104,10 @@ def send_to_telegram(text: str) -> None:
     try:
       response = requests.post(url, json=payload, timeout=15)
       if response.status_code != 200:
-        print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답: {response.text}")
+        print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답 내용: {response.text}")
       else:
         print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-      time.sleep(1)
+      time.sleep(0.5)
     except Exception as e:
       print(f"텔레그램 전송 오류 발생 ({i}/{len(chunks)}): {e}")
 
@@ -146,14 +147,14 @@ def generate_report_with_llm() -> str:
             or "RESOURCE_EXHAUSTED" in error_str
             or "high demand" in error_str.lower()
         ):
-          # API가 지시하는 대기 시간 파싱 (예: Please retry in 53s)
-          retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str) or re.search(r"retry in (\d+)", error_str)
-          if retry_match:
-            wait_time = int(retry_match.group(1)) + 2
-          else:
-            wait_time = 15 * attempt
 
-          print(f"  일시적 한도/과부하 발생. {wait_time}초 대기 후 재시도...")
+          retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
+          if retry_match:
+            wait_time = min(int(retry_match.group(1)), 10)
+          else:
+            wait_time = BASE_WAIT_SECONDS * attempt
+
+          print(f"  일시적 대기(429/503). {wait_time}초 대기 후 재시도...")
           time.sleep(wait_time)
         else:
           print(f"  실패 ({model_name}): {e}")
