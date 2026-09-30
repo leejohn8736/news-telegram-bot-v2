@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-- Gemini로 리포트 생성 (429/503 최적화 및 텔레그램 안정 발송)
+- Gemini API 리포트 생성 (속도 및 쿼터 최적화)
+- 텔레그램 메신저 전송
 """
 
 from datetime import datetime
@@ -13,15 +14,16 @@ import pytz
 import requests
 
 # ============================================================
-# 설정 (무료 티어 최적화 모델 구성)
+# 설정 (대기시간 최소화 및 안정화 모델 우선배치)
 # ============================================================
 CANDIDATE_MODELS = [
-    "gemini-flash",  # 1순위: 최신 안정화 고정 별칭 (가장 높은 안정성)
-    "gemini-3.8-flash",  # 2순위: 3.8 플래시 모델
+    "gemini-3.6-flash",  # 1순위: 응답 속도 및 안정성 최고
+    "gemini-flash",      # 2순위: 최신 안정화 별칭
+    "gemini-3.8-flash"   # 3순위: 백업
 ]
 
-MAX_RETRIES_PER_MODEL = 2  # 무한 대기 방지를 위해 재시도 2회로 제한
-BASE_WAIT_SECONDS = 5
+MAX_RETRIES_PER_MODEL = 2  # 빠른 넘어가기를 위해 재시도 2회로 제한
+BASE_WAIT_SECONDS = 3      # 대기 시간을 3초로 대폭 축소
 
 
 def get_today_str() -> str:
@@ -82,15 +84,12 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
 
 
 def send_to_telegram(text: str) -> None:
-  """텔레그램 메시지 안전 전송"""
+  """텔레그램 메시지 전송 및 예외 상세 로그 출력"""
   bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
   chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
   if not bot_token or not chat_id:
-    print(
-        "텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID가"
-        " 없습니다."
-    )
+    print("텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
     return
 
   url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -103,12 +102,14 @@ def send_to_telegram(text: str) -> None:
     }
 
     try:
-      response = requests.post(url, json=payload, timeout=30)
-      response.raise_for_status()
-      print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-      time.sleep(1)
+      response = requests.post(url, json=payload, timeout=15)
+      if response.status_code != 200:
+        print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답 내용: {response.text}")
+      else:
+        print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
+      time.sleep(0.5)
     except Exception as e:
-      print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): {e}")
+      print(f"텔레그램 전송 오류 발생 ({i}/{len(chunks)}): {e}")
 
 
 def generate_report_with_llm() -> str:
@@ -149,14 +150,11 @@ def generate_report_with_llm() -> str:
 
           retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
           if retry_match:
-            wait_time = int(retry_match.group(1)) + 1
+            wait_time = min(int(retry_match.group(1)), 10)
           else:
             wait_time = BASE_WAIT_SECONDS * attempt
 
-          print(
-              f"  일시적 에러(429/503) 발생. {wait_time}초 대기 후"
-              " 재시도..."
-          )
+          print(f"  일시적 대기(429/503). {wait_time}초 대기 후 재시도...")
           time.sleep(wait_time)
         else:
           print(f"  실패 ({model_name}): {e}")
