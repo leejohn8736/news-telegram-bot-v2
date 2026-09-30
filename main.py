@@ -1,27 +1,30 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
-- Gemini로 리포트 생성 (최신 gemini-3.8-flash 모델 적용)
-- 텔레그램으로 자동 전송 (4096자 제한 대응 및 안전 전송)
+- Gemini로 리포트 생성 (429 / 503 예외 처리 강화)
+- 텔레그램으로 자동 전송
 """
 
 from datetime import datetime
 import os
+import re
 import time
 from google import genai
 import pytz
 import requests
 
 # ============================================================
-# 설정 (Google API 권장 최신 모델 식별자 반영)
+# 설정
 # ============================================================
+# 무료 티어에서 안정적으로 동작하는 Flash 계열 모델 위주 구성
 CANDIDATE_MODELS = [
-    "gemini-3.8-flash",  # 1순위: Google API 권장 최신 Flash 모델
-    "gemini-3.1-pro-preview",  # 2순위: 백업용 고성능 Pro 모델
+    "gemini-3.8-flash",  # 1순위: 최신 플래시 모델
+    "gemini-3.6-flash",  # 2순위: 3.6 플래시 모델
+    "gemini-flash",  # 3순위: 최신 플래시 고정 별칭
 ]
 
-MAX_RETRIES_PER_MODEL = 3
-BASE_WAIT_SECONDS = 8
+MAX_RETRIES_PER_MODEL = 4
+BASE_WAIT_SECONDS = 10
 
 
 def get_today_str() -> str:
@@ -61,7 +64,7 @@ def build_prompt(today: str) -> str:
 
 
 def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
-  """텔레그램 4096자 제한 대응을 위해 줄바꿈 기준으로 안전하게 분할"""
+  """텔레그램 4096자 제한 대응을 위해 줄바꿈 기준으로 분할"""
   if len(text) <= max_length:
     return [text]
 
@@ -82,7 +85,7 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
 
 
 def send_to_telegram(text: str) -> None:
-  """텔레그램으로 메시지 안전 전송"""
+  """텔레그램 메시지 전송"""
   bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
   chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -106,7 +109,7 @@ def send_to_telegram(text: str) -> None:
       response = requests.post(url, json=payload, timeout=30)
       response.raise_for_status()
       print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-      time.sleep(1)  # 텔레그램 서버 연속 전송 제한 방지
+      time.sleep(1)
     except Exception as e:
       print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): {e}")
 
@@ -139,16 +142,30 @@ def generate_report_with_llm() -> str:
         last_error = e
         error_str = str(e)
 
+        # 503(과부하) 또는 429(속도/쿼터 제한) 발생 시 예외 대기 후 재시도
         if (
             "503" in error_str
             or "UNAVAILABLE" in error_str
+            or "429" in error_str
+            or "RESOURCE_EXHAUSTED" in error_str
             or "high demand" in error_str.lower()
         ):
-          wait_time = BASE_WAIT_SECONDS * attempt
-          print(f"  과부하(503) 발생. {wait_time}초 대기 후 재시도...")
+
+          # retryDelay(예: "retryDelay: '16s'") 문구가 있을 경우 파싱하여 대기
+          retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
+          if retry_match:
+            wait_time = int(retry_match.group(1)) + 2
+          else:
+            wait_time = BASE_WAIT_SECONDS * attempt
+
+          print(
+              f"  일시적 에러(429/503) 발생. {wait_time}초 대기 후"
+              " 재시도..."
+          )
           time.sleep(wait_time)
         else:
-          print(f"  실패 ({model_name}): {e}")
+          print(f"  치명적 실패 ({model_name}): {e}")
+          # 404 등 모델 상이 에러일 경우에만 다음 후보 모델로 변경
           break
 
     print(f"모델 {model_name} 실패. 다음 후보 모델로 이동합니다.")
