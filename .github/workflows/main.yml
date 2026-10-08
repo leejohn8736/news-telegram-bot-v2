@@ -1,9 +1,9 @@
 name: Daily Market Report (Gemini)
 
 on:
-  schedule:
-    - cron: "40 21 * * *"   # 한국시간 06:40
-  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-market-report]
+  workflow_dispatch:  # 수동 테스트용 유지
 
 jobs:
   generate-report:
