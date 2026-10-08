@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-매일 아침 6:40 (한국시간) 실행용 당일 증시 심층 분석 리포트
+매일 아침 웹훅 트리거용 당일 증시 심층 분석 리포트
 - Gemini API 리포트 생성 (속도 및 쿼터 최적화)
 - 텔레그램 메신저 전송
 """
@@ -27,14 +27,14 @@ BASE_WAIT_SECONDS = 3      # 대기 시간을 3초로 대폭 축소
 
 
 def get_today_str() -> str:
-  kst = pytz.timezone("Asia/Seoul")
-  now = datetime.now(kst)
-  weekdays = ["월", "화", "수", "목", "금", "토", "일"]
-  return f"{now.year}년 {now.month}월 {now.day}일 ({weekdays[now.weekday()]})"
+    kst = pytz.timezone("Asia/Seoul")
+    now = datetime.now(kst)
+    weekdays = ["월", "화", "수", "목", "금", "토", "일"]
+    return f"{now.year}년 {now.month}월 {now.day}일 ({weekdays[now.weekday()]})"
 
 
 def build_prompt(today: str) -> str:
-  return f"""
+    return f"""
 당신은 한국 증시 전문 애널리스트입니다.
 아래 요구사항을 **정확히** 지켜서 오늘({today}) 기준의 당일 증시 심층 분석 글을 작성하세요.
 
@@ -63,130 +63,130 @@ def build_prompt(today: str) -> str:
 
 
 def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
-  """텔레그램 4096자 제한 대응을 위해 줄바꿈 기준으로 분할"""
-  if len(text) <= max_length:
-    return [text]
-
-  chunks = []
-  while text:
+    """텔레그램 4096자 제한 대응을 위해 줄바꿈 기준으로 분할"""
     if len(text) <= max_length:
-      chunks.append(text)
-      break
+        return [text]
 
-    split_pos = text.rfind("\n", 0, max_length)
-    if split_pos == -1 or split_pos < max_length // 2:
-      split_pos = max_length
+    chunks = []
+    while text:
+        if len(text) <= max_length:
+            chunks.append(text)
+            break
 
-    chunks.append(text[:split_pos].rstrip())
-    text = text[split_pos:].lstrip()
+        split_pos = text.rfind("\n", 0, max_length)
+        if split_pos == -1 or split_pos < max_length // 2:
+            split_pos = max_length
 
-  return chunks
+        chunks.append(text[:split_pos].rstrip())
+        text = text[split_pos:].lstrip()
+
+    return chunks
 
 
 def send_to_telegram(text: str) -> None:
-  """텔레그램 메시지 전송 및 예외 상세 로그 출력"""
-  bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-  chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    """텔레그램 메시지 전송 및 예외 상세 로그 출력"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-  if not bot_token or not chat_id:
-    print("텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
-    return
+    if not bot_token or not chat_id:
+        print("텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+        return
 
-  url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-  chunks = split_for_telegram(text, max_length=4000)
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    chunks = split_for_telegram(text, max_length=4000)
 
-  for i, chunk in enumerate(chunks, 1):
-    payload = {
-        "chat_id": chat_id,
-        "text": chunk,
-    }
+    for i, chunk in enumerate(chunks, 1):
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+        }
 
-    try:
-      response = requests.post(url, json=payload, timeout=15)
-      if response.status_code != 200:
-        print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답 내용: {response.text}")
-      else:
-        print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-      time.sleep(0.5)
-    except Exception as e:
-      print(f"텔레그램 전송 오류 발생 ({i}/{len(chunks)}): {e}")
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            if response.status_code != 200:
+                print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답 내용: {response.text}")
+            else:
+                print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"텔레그램 전송 오류 발생 ({i}/{len(chunks)}): {e}")
 
 
 def generate_report_with_llm() -> str:
-  api_key = os.getenv("GEMINI_API_KEY")
-  if not api_key:
-    raise ValueError("GEMINI_API_KEY 환경변수가 없습니다.")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY 환경변수가 없습니다.")
 
-  client = genai.Client(api_key=api_key)
-  today = get_today_str()
-  prompt = build_prompt(today)
+    client = genai.Client(api_key=api_key)
+    today = get_today_str()
+    prompt = build_prompt(today)
 
-  last_error = None
+    last_error = None
 
-  for model_name in CANDIDATE_MODELS:
-    print(f"\n모델 시도 시작: {model_name}")
+    for model_name in CANDIDATE_MODELS:
+        print(f"\n모델 시도 시작: {model_name}")
 
-    for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
-      try:
-        print(f"  → 시도 {attempt}/{MAX_RETRIES_PER_MODEL}")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-        )
-        print(f"성공! 사용 모델: {model_name}")
-        return response.text
+        for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+            try:
+                print(f"  → 시도 {attempt}/{MAX_RETRIES_PER_MODEL}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                print(f"성공! 사용 모델: {model_name}")
+                return response.text
 
-      except Exception as e:
-        last_error = e
-        error_str = str(e)
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
 
-        if (
-            "503" in error_str
-            or "UNAVAILABLE" in error_str
-            or "429" in error_str
-            or "RESOURCE_EXHAUSTED" in error_str
-            or "high demand" in error_str.lower()
-        ):
+                if (
+                    "503" in error_str
+                    or "UNAVAILABLE" in error_str
+                    or "429" in error_str
+                    or "RESOURCE_EXHAUSTED" in error_str
+                    or "high demand" in error_str.lower()
+                ):
 
-          retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
-          if retry_match:
-            wait_time = min(int(retry_match.group(1)), 10)
-          else:
-            wait_time = BASE_WAIT_SECONDS * attempt
+                    retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
+                    if retry_match:
+                        wait_time = min(int(retry_match.group(1)), 10)
+                    else:
+                        wait_time = BASE_WAIT_SECONDS * attempt
 
-          print(f"  일시적 대기(429/503). {wait_time}초 대기 후 재시도...")
-          time.sleep(wait_time)
-        else:
-          print(f"  실패 ({model_name}): {e}")
-          break
+                    print(f"  일시적 대기(429/503). {wait_time}초 대기 후 재시도...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"  실패 ({model_name}): {e}")
+                    break
 
-    print(f"모델 {model_name} 실패. 다음 후보 모델로 이동합니다.")
+        print(f"모델 {model_name} 실패. 다음 후보 모델로 이동합니다.")
 
-  raise RuntimeError(f"모든 모델 시도 실패. 마지막 에러: {last_error}")
+    raise RuntimeError(f"모든 모델 시도 실패. 마지막 에러: {last_error}")
 
 
 def main():
-  print("리포트 생성 중... (Gemini API 호출)")
-  report = generate_report_with_llm()
+    print("리포트 생성 중... (Gemini API 호출)")
+    report = generate_report_with_llm()
 
-  print("\n" + "=" * 60)
-  print(report)
-  print("=" * 60)
+    print("\n" + "=" * 60)
+    print(report)
+    print("=" * 60)
 
-  # 파일 저장
-  kst = pytz.timezone("Asia/Seoul")
-  today_file = datetime.now(kst).strftime("%Y%m%d")
-  full_filename = f"report_{today_file}.txt"
+    # 파일 저장
+    kst = pytz.timezone("Asia/Seoul")
+    today_file = datetime.now(kst).strftime("%Y%m%d")
+    full_filename = f"report_{today_file}.txt"
 
-  with open(full_filename, "w", encoding="utf-8") as f:
-    f.write(report)
-  print(f"\n전체 리포트 저장 완료: {full_filename}")
+    with open(full_filename, "w", encoding="utf-8") as f:
+        f.write(report)
+    print(f"\n전체 리포트 저장 완료: {full_filename}")
 
-  # 텔레그램 전송
-  print("\n텔레그램으로 전송 시작...")
-  send_to_telegram(report)
-  print("텔레그램 전송 작업 완료.")
+    # 텔레그램 전송
+    print("\n텔레그램으로 전송 시작...")
+    send_to_telegram(report)
+    print("텔레그램 전송 작업 완료.")
 
 
 if __name__ == "__main__":
-  main()
+    main()
