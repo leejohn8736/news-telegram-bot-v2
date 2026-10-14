@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-매일 아침 웹훅 트리거용 당일 증시 심층 분석 리포트
-- Gemini API 리포트 생성 (속도 및 쿼터 최적화)
+매일 아침 깃허브 액션 트리거용 당일 증시 심층 분석 리포트
+- Gemini API 리포트 생성 및 견고한 예외/재시도 처리
 - 텔레그램 메신저 전송
 """
 
@@ -14,16 +14,15 @@ import pytz
 import requests
 
 # ============================================================
-# 설정 (대기시간 최소화 및 안정화 모델 우선배치)
+# 설정 (현재 구글에서 공식 지원하는 안정적인 표준 모델 순서 배치)
 # ============================================================
 CANDIDATE_MODELS = [
-    "gemini-3.6-flash",  # 1순위: 응답 속도 및 안정성 최고
-    "gemini-flash",      # 2순위: 최신 안정화 별칭
-    "gemini-3.8-flash"   # 3순위: 백업
+    "gemini-2.5-flash",  # 1순위: 가장 안정적이고 속도가 빠른 표준 모델
+    "gemini-1.5-flash",  # 2순위: 백업용 안정화 모델
 ]
 
-MAX_RETRIES_PER_MODEL = 2  # 빠른 넘어가기를 위해 재시도 2회로 제한
-BASE_WAIT_SECONDS = 3      # 대기 시간을 3초로 대폭 축소
+MAX_RETRIES_PER_MODEL = 3  # 재시도 횟수 상향
+BASE_WAIT_SECONDS = 10     # 기본 대기 시간 확보
 
 
 def get_today_str() -> str:
@@ -140,6 +139,7 @@ def generate_report_with_llm() -> str:
                 last_error = e
                 error_str = str(e)
 
+                # 429(할당량 초과) 또는 503(과부하) 에러 감지 시 대기 후 재시도
                 if (
                     "503" in error_str
                     or "UNAVAILABLE" in error_str
@@ -147,14 +147,13 @@ def generate_report_with_llm() -> str:
                     or "RESOURCE_EXHAUSTED" in error_str
                     or "high demand" in error_str.lower()
                 ):
-
                     retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
                     if retry_match:
-                        wait_time = min(int(retry_match.group(1)), 10)
+                        wait_time = min(int(retry_match.group(1)), 30)
                     else:
                         wait_time = BASE_WAIT_SECONDS * attempt
 
-                    print(f"  일시적 대기(429/503). {wait_time}초 대기 후 재시도...")
+                    print(f"  일시적 과부하/제한 발생. {wait_time}초 대기 후 재시도...")
                     time.sleep(wait_time)
                 else:
                     print(f"  실패 ({model_name}): {e}")
