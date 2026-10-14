@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 매일 아침 깃허브 액션 트리거용 당일 증시 심층 분석 리포트
-- Gemini API 리포트 생성 및 견고한 예외/재시도 처리
+- Gemini API 리포트 생성 및 429/503 에러 완벽 대응 지능형 재시도 로직
 - 텔레그램 메신저 전송
 """
 
@@ -14,15 +14,15 @@ import pytz
 import requests
 
 # ============================================================
-# 설정 (현재 구글에서 공식 지원하는 안정적인 표준 모델 순서 배치)
+# 설정 (현재 안정적으로 지원되는 최신 플래시 모델 중심 배치)
 # ============================================================
 CANDIDATE_MODELS = [
-    "gemini-2.5-flash",  # 1순위: 가장 안정적이고 속도가 빠른 표준 모델
+    "gemini-2.5-flash",  # 1순위: 안정적인 최신 플래시 모델
     "gemini-1.5-flash",  # 2순위: 백업용 안정화 모델
 ]
 
-MAX_RETRIES_PER_MODEL = 3  # 재시도 횟수 상향
-BASE_WAIT_SECONDS = 10     # 기본 대기 시간 확보
+MAX_RETRIES_PER_MODEL = 3
+BASE_WAIT_SECONDS = 15
 
 
 def get_today_str() -> str:
@@ -139,21 +139,26 @@ def generate_report_with_llm() -> str:
                 last_error = e
                 error_str = str(e)
 
-                # 429(할당량 초과) 또는 503(과부하) 에러 감지 시 대기 후 재시도
+                # 429(할당량 초과) 또는 503(과부하) 감지
                 if (
                     "503" in error_str
                     or "UNAVAILABLE" in error_str
                     or "429" in error_str
                     or "RESOURCE_EXHAUSTED" in error_str
                     or "high demand" in error_str.lower()
+                    or "quota" in error_str.lower()
                 ):
-                    retry_match = re.search(r"retryDelay':\s*'(\d+)s'", error_str)
+                    # 구글 API가 안내하는 retryDelay 초(second) 추출 (예: '53s' 또는 '53.43s')
+                    retry_match = re.search(r"retryDelay['\"]?:\s*['\"]?([\d.]+)s?", error_str)
                     if retry_match:
-                        wait_time = min(int(retry_match.group(1)), 30)
+                        wait_time = int(float(retry_match.group(1))) + 2  # 여유 있게 2초 추가
                     else:
                         wait_time = BASE_WAIT_SECONDS * attempt
 
-                    print(f"  일시적 과부하/제한 발생. {wait_time}초 대기 후 재시도...")
+                    # 최대 대기 시간이 너무 길어지는 것 방지 (최대 60초 제한)
+                    wait_time = min(wait_time, 60)
+
+                    print(f"  ⚠️ API 제한/과부하 발생. 구글 가이드에 따라 {wait_time}초 동안 대기 후 재시도합니다...")
                     time.sleep(wait_time)
                 else:
                     print(f"  실패 ({model_name}): {e}")
