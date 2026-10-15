@@ -1,38 +1,43 @@
-name: Daily Market Report (Gemini)
+name: Realtime News Notification Bot
 
 on:
-  repository_dispatch:
-    types: [trigger-market-report]
-  workflow_dispatch:  # 수동 테스트용 유지
+  workflow_dispatch:          # Actions 탭에서 수동 실행 버튼
+  repository_dispatch:        # cron-job.org 외부 신호를 수신하는 설정[cite: 1]
+    types: [trigger_briefing] # cron-job.org와 일치하는 이벤트 이름
 
 jobs:
-  generate-report:
+  run-bot:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write           # 기록 파일 자동 저장을 위한 권한
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4[cite: 1]
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: 파이썬 환경 설정
+        uses: actions/setup-python@v5[cite: 1]
         with:
-          python-version: "3.11"
+          python-version: '3.11'[cite: 1]
 
-      - name: Install dependencies
+      - name: 필요 라이브러리 설치
         run: |
-          python -m pip install --upgrade pip
-          pip install pytz google-genai requests
+          python -m pip install --upgrade pip[cite: 1]
+          pip install google-genai requests pytz[cite: 1]
 
-      - name: Run report generator
+      - name: 뉴스 크롤러 및 Gemini AI 브리핑 실행
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}[cite: 1]
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}[cite: 1]
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}[cite: 1]
+        run: |
+          python main.py[cite: 1]
 
-      - name: Upload report as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: daily-market-report
-          path: report_*.txt
-          retention-days: 30
+      - name: 발송 및 기록 자동 저장
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}[cite: 1]
+        run: |
+          git config --global user.name "github-actions[bot]"[cite: 1]
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"[cite: 1]
+          git add sent_links.txt || true[cite: 1]
+          git commit -m "update history [skip ci]" || echo "No changes to commit"[cite: 1]
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git HEAD:main[cite: 1]
