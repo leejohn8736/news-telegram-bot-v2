@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-매일 자동 실행용 당일 증시 심층 분석 리포트
-- Gemini API 429/503 에러 완벽 대응 및 최신 안정화 모델 적용
+매일 아침 깃허브 액션 트리거용 당일 증시 심층 분석 리포트
+- Gemini API 최신 모델 적용 및 503/429 무한 피크 트래픽 방어 로직
 - 텔레그램 메신저 전송
 """
 
@@ -14,15 +14,15 @@ import pytz
 import requests
 
 # ============================================================
-# 설정 (가장 안정적이고 차단 확률이 낮은 최신 모델 구성)
+# 설정 (실제 동작하는 검증된 최신 모델만 배치)
 # ============================================================
 CANDIDATE_MODELS = [
-    "gemini-flash",      # 1순위: 구글 공식 최신 안정화 별칭 (가장 높은 안정성)
-    "gemini-3.8-flash",  # 2순위: 3.8 플래시 백업 모델
+    "gemini-3.8-flash",  # 1순위: 최신 플래시 모델
+    "gemini-3.6-flash",  # 2순위: 백업 플래시 모델
 ]
 
-MAX_RETRIES_PER_MODEL = 3  # 충분한 재시도 횟수 부여
-BASE_WAIT_SECONDS = 10     # 충분한 기본 대기 시간 확보
+MAX_RETRIES_PER_MODEL = 5  # 과부하(503) 시 피크가 풀릴 때까지 충분히 재시도
+BASE_WAIT_SECONDS = 15     # 대기 기본 시간 확보
 
 
 def get_today_str() -> str:
@@ -83,12 +83,12 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
 
 
 def send_to_telegram(text: str) -> None:
-    """텔레그램 메시지 안전 전송"""
+    """텔레그램 메시지 전송 및 예외 상세 로그 출력"""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not bot_token or not chat_id:
-        print("텔레그램 전송 스킵: 토큰 또는 챗 ID가 없습니다.")
+        print("텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -102,11 +102,13 @@ def send_to_telegram(text: str) -> None:
 
         try:
             response = requests.post(url, json=payload, timeout=30)
-            response.raise_for_status()
-            print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-            time.sleep(1)
+            if response.status_code != 200:
+                print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답 내용: {response.text}")
+            else:
+                print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
+            time.sleep(0.5)
         except Exception as e:
-            print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): {e}")
+            print(f"텔레그램 전송 오류 발생 ({i}/{len(chunks)}): {e}")
 
 
 def generate_report_with_llm() -> str:
@@ -137,7 +139,7 @@ def generate_report_with_llm() -> str:
                 last_error = e
                 error_str = str(e)
 
-                # 429(할당량 초과) 또는 503(과부하) 에러 감지 시 지능형 대기
+                # 429(할당량 초과) 또는 503(과부하) 감지
                 if (
                     "503" in error_str
                     or "UNAVAILABLE" in error_str
@@ -152,9 +154,9 @@ def generate_report_with_llm() -> str:
                     else:
                         wait_time = BASE_WAIT_SECONDS * attempt
 
-                    wait_time = min(wait_time, 60)  # 최대 60초 제한
+                    wait_time = min(wait_time, 60)  # 최대 대기 60초
 
-                    print(f"  ⚠️ 서버 과부하/제한 감지. {wait_time}초 대기 후 재시도합니다...")
+                    print(f"  ⚠️ 서버 과부하/제한 발생 ({attempt}/{MAX_RETRIES_PER_MODEL}). {wait_time}초 대기 후 재시도합니다...")
                     time.sleep(wait_time)
                 else:
                     print(f"  실패 ({model_name}): {e}")
