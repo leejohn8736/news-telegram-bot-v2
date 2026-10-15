@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-매일 아침 깃허브 액션 트리거용 당일 증시 심층 분석 리포트
-- Gemini API 최신 모델 적용 및 503/429 무한 피크 트래픽 방어 로직
-- 텔레그램 메신저 전송
+매일 자동 실행용 당일 증시 심층 분석 리포트
+- 코스피 20개, 코스닥 20개 정확한 수량 출력 보장 프롬프트 적용
+- 503/429 에러 지능형 방어 및 텔레그램 전송
 """
 
 from datetime import datetime
@@ -14,15 +14,15 @@ import pytz
 import requests
 
 # ============================================================
-# 설정 (실제 동작하는 검증된 최신 모델만 배치)
+# 설정 (검증된 최신 안정 모델 구성)
 # ============================================================
 CANDIDATE_MODELS = [
     "gemini-3.8-flash",  # 1순위: 최신 플래시 모델
     "gemini-3.6-flash",  # 2순위: 백업 플래시 모델
 ]
 
-MAX_RETRIES_PER_MODEL = 5  # 과부하(503) 시 피크가 풀릴 때까지 충분히 재시도
-BASE_WAIT_SECONDS = 15     # 대기 기본 시간 확보
+MAX_RETRIES_PER_MODEL = 5
+BASE_WAIT_SECONDS = 15
 
 
 def get_today_str() -> str:
@@ -35,7 +35,7 @@ def get_today_str() -> str:
 def build_prompt(today: str) -> str:
     return f"""
 당신은 한국 증시 전문 애널리스트입니다.
-아래 요구사항을 **정확히** 지켜서 오늘({today}) 기준의 당일 증시 심층 분석 글을 작성하세요.
+아래 요구사항을 **단 한 글자도 빠짐없이 정확히** 지켜서 오늘({today}) 기준의 당일 증시 심층 분석 글을 작성하세요.
 
 반드시 지켜야 할 형식:
 
@@ -47,16 +47,16 @@ def build_prompt(today: str) -> str:
 6. 정치 외교 산업 관련종목 코스피 코스닥 각각 10개 뜨거운 관심 받는 걸로 순환매매 가능종목 번호 넣어서 말해.
    - 코스피 종목 1부터 10 번호 순서 넣고 하트 ♡ 모양 넣어. 각 종목명 옆에 테마와 섹터 적어.
    - 코스닥 종목도 1부터 10 번호 넣고 ♡ 모양 넣어. 각 종목명 옆에 테마와 섹터 적어.
-7. 방금 나온 앞 내용으로 당일 오전 매매 가능한 종목 영업이익과 유보율 좋은 종목으로 수혜를 받을 수 있는 종목으로 당일 섹터와 테마 뉴스 있는 것으로
-   - 코스피로 20개 1등주와 2등주 추천 (추천시 1등주 종목명 테마와 섹터 / 2등주 종목명 테마와 섹터 넣어줘)
-   - 그 다음은 코스닥으로 20개 1등주와 2등주 추천 (같은 형식)
+7. [매우 중요] 방금 나온 앞 내용으로 당일 오전 매매 가능한 종목 영업이익과 유보율 좋은 종목으로 수혜를 받을 수 있는 종목으로 당일 섹터와 테마 뉴스 있는 것으로:
+   - **코스피 종목은 반드시 1번부터 20번까지 총 20개를 빠짐없이 작성**할 것 (각 종목마다 1등주 또는 2등주 명시, 종목명과 테마/섹터 포함).
+   - **코스닥 종목도 반드시 1번부터 20번까지 총 20개를 빠짐없이 작성**할 것 (각 종목마다 1등주 또는 2등주 명시, 종목명과 테마/섹터 포함).
+   * 주의: 절대로 중간에 끊지 말고 20개를 채워야 합니다.
 8. 마지막에는 중요 표시로 종목 권유와 투자에 관한 책임은 투자자에게 있다는 경고 문구 꼭 포함.
 9. 끝에 "출처 AI"라고 글 적어.
 
 주의사항:
 - 실제 존재하는 종목만 사용해라.
 - 매일 내용이 달라지도록 최신 테마와 이슈를 반영해라.
-- 형식은 위 요구사항을 한 글자도 빠뜨리지 말고 정확히 지켜라.
 - 한국어로만 작성해라.
 """
 
@@ -83,12 +83,12 @@ def split_for_telegram(text: str, max_length: int = 4000) -> list[str]:
 
 
 def send_to_telegram(text: str) -> None:
-    """텔레그램 메시지 전송 및 예외 상세 로그 출력"""
+    """텔레그램 메시지 안전 전송"""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not bot_token or not chat_id:
-        print("텔레그램 전송 스킵: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+        print("텔레그램 전송 스킵: 토큰 또는 챗 ID가 없습니다.")
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -102,13 +102,11 @@ def send_to_telegram(text: str) -> None:
 
         try:
             response = requests.post(url, json=payload, timeout=30)
-            if response.status_code != 200:
-                print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): 상태 코드 {response.status_code}, 응답 내용: {response.text}")
-            else:
-                print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
-            time.sleep(0.5)
+            response.raise_for_status()
+            print(f"텔레그램 전송 성공 ({i}/{len(chunks)})")
+            time.sleep(1)
         except Exception as e:
-            print(f"텔레그램 전송 오류 발생 ({i}/{len(chunks)}): {e}")
+            print(f"텔레그램 전송 실패 ({i}/{len(chunks)}): {e}")
 
 
 def generate_report_with_llm() -> str:
@@ -139,7 +137,6 @@ def generate_report_with_llm() -> str:
                 last_error = e
                 error_str = str(e)
 
-                # 429(할당량 초과) 또는 503(과부하) 감지
                 if (
                     "503" in error_str
                     or "UNAVAILABLE" in error_str
@@ -154,9 +151,9 @@ def generate_report_with_llm() -> str:
                     else:
                         wait_time = BASE_WAIT_SECONDS * attempt
 
-                    wait_time = min(wait_time, 60)  # 최대 대기 60초
+                    wait_time = min(wait_time, 60)
 
-                    print(f"  ⚠️ 서버 과부하/제한 발생 ({attempt}/{MAX_RETRIES_PER_MODEL}). {wait_time}초 대기 후 재시도합니다...")
+                    print(f"  ⚠️ 서버 과부하 감지. {wait_time}초 대기 후 재시도합니다...")
                     time.sleep(wait_time)
                 else:
                     print(f"  실패 ({model_name}): {e}")
