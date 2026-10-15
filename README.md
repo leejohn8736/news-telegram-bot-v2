@@ -1,4 +1,4 @@
-증시 브리핑 (매일 아침 6시 42 분 발송 설정함 cron-job-trigger 설정함 )
+증시 브리핑 (매일 아침 5시 42 분 발송 설정함 cron-job-trigger 설정함 )
 
 
 증시 브리핑 (매일 아침 6시 27 분 발송 설정함 cron-job-trigger 설정함 )
